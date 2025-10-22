@@ -7,11 +7,21 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.schemas import DrawConfig, DrawStartResponse, DrawResult, AuditInput, AuditResult, DemoConfig
+from app.schemas import (
+    DrawConfig,
+    DrawStartResponse,
+    DrawResult,
+    AuditInput,
+    AuditResult,
+    DemoConfig,
+    NistStartResponse,
+    NistReport,
+)
 from app.services.generator import run_draw
 from app.services.logging import StageLogger
 from app.services.stat_tests import basic_tests
 from app.utils.sse import sse_format
+from app.services.nist_runner import run_nist_full
 
 # OpenAPI/Swagger metadata
 tags_metadata = [
@@ -54,6 +64,7 @@ app.add_middleware(
 
 
 JOBS: Dict[str, Dict[str, Any]] = {}
+NIST_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 @app.get("/health", tags=["Health"], summary="Проверка доступности сервиса")
@@ -175,8 +186,10 @@ async def draw_stream(job_id: str):
                 yield sse_format(evt.get("stage", "stage"), evt)
             if job.get("status") in ("completed", "error"):
                 # send final
+                tests_obj = job.get("tests", {}) or {}
+                nist_summary = tests_obj.get("nist", {}).get("summary", {}) if isinstance(tests_obj, dict) else {}
                 yield sse_format("final", {"status": job.get("status"), "result": {
-                    "draw": job.get("draw"), "fingerprint": job.get("fingerprint"), "tests": job.get("tests", {}).get("summary", {})
+                    "draw": job.get("draw"), "fingerprint": job.get("fingerprint"), "tests": nist_summary
                 }})
                 break
             await asyncio.sleep(0.2)
@@ -251,6 +264,130 @@ async def audit_upload(file: UploadFile = File(...)):
     return AuditResult(status="ok", length=len(bits), tests=results)
 
 
+# NIST SP 800-22 full battery
+@app.post(
+    "/audit/nist/start",
+    response_model=NistStartResponse,
+    tags=["Audit"],
+    summary="Запуск полного набора NIST SP 800-22",
+    description=(
+        "Принимает битовую строку или список чисел и запускает полный набор тестов NIST. "
+        "Возвращает идентификатор задачи для отслеживания прогресса и результата."
+    ),
+)
+async def nist_start(payload: AuditInput = Body(...)):
+    # Prepare bits
+    bits: Optional[str] = None
+    if payload.sequence_bits:
+        bits = ''.join(ch for ch in payload.sequence_bits if ch in '01')
+    elif payload.numbers is not None:
+        if not payload.numbers:
+            raise HTTPException(400, "numbers is empty")
+        width = max(1, max(payload.numbers).bit_length())
+        bits = ''.join(f"{n:0{width}b}" for n in payload.numbers)
+    else:
+        raise HTTPException(400, "Provide sequence_bits or numbers")
+
+    job_id = str(uuid.uuid4())
+    NIST_JOBS[job_id] = {"status": "running", "started_at": time.time(), "stages": []}
+
+    async def run():
+        def emit(name: str, evt: dict):
+            NIST_JOBS[job_id]["stages"].append(evt)
+
+        try:
+            result = run_nist_full(bits, emit=emit)
+            NIST_JOBS[job_id].update(result)
+        except Exception as e:
+            NIST_JOBS[job_id].update({"status": "error", "error": str(e), "finished_at": time.time()})
+
+    asyncio.create_task(run())
+    return NistStartResponse(job_id=job_id)
+
+
+@app.get(
+    "/audit/nist/result/{job_id}",
+    response_model=NistReport,
+    tags=["Audit"],
+    summary="Результат полного набора NIST",
+)
+async def nist_result(job_id: str):
+    job = NIST_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    data = {
+        "job_id": job_id,
+        "status": job.get("status", "running"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "length": job.get("length", 0),
+        "tests": job.get("tests", []),
+        "summary": job.get("summary", {"eligible": 0, "total": 0, "passed": 0, "ratio": 0.0}),
+    }
+    return JSONResponse(data)
+
+
+@app.get(
+    "/audit/nist/stream/{job_id}",
+    tags=["Audit"],
+    summary="SSE прогресс NIST тестов",
+    description="Стрим серверных событий с этапами выполнения полного набора NIST.",
+)
+async def nist_stream(job_id: str):
+    job = NIST_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+
+    async def event_gen():
+        idx = 0
+        while True:
+            job = NIST_JOBS.get(job_id)
+            if not job:
+                break
+            stages = job.get("stages", [])
+            while idx < len(stages):
+                evt = stages[idx]
+                idx += 1
+                yield sse_format(evt.get("stage", "nist"), evt)
+            if job.get("status") in ("completed", "error"):
+                yield sse_format("final", {"status": job.get("status"), "summary": job.get("summary", {})})
+                break
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@app.post(
+    "/draw/{job_id}/nist/start",
+    response_model=NistStartResponse,
+    tags=["Draw"],
+    summary="Запуск NIST тестов на биты тиража",
+)
+async def nist_from_draw(job_id: str):
+    job = JOBS.get(job_id)
+    if not job or job.get("status") != "completed":
+        raise HTTPException(400, "draw job not found or not completed")
+    bits = job.get("_white_bits")
+    if not bits:
+        raise HTTPException(404, "no bits available for this draw")
+
+    n_job_id = str(uuid.uuid4())
+    NIST_JOBS[n_job_id] = {"status": "running", "started_at": time.time(), "stages": []}
+
+    async def run():
+        def emit(name: str, evt: dict):
+            NIST_JOBS[n_job_id]["stages"].append(evt)
+
+        try:
+            result = run_nist_full(bits, emit=emit)
+            NIST_JOBS[n_job_id].update(result)
+        except Exception as e:
+            NIST_JOBS[n_job_id].update({"status": "error", "error": str(e), "finished_at": time.time()})
+
+    asyncio.create_task(run())
+    return NistStartResponse(job_id=n_job_id)
+
+
 @app.get(
     "/demo/stream",
     tags=["Demo"],
@@ -265,7 +402,7 @@ async def demo_stream(scenario: str = "default"):
             ("demo:whitening", {"info": "Вайтинг (экстрактор фон Неймана) убирает смещения."}),
             ("demo:seed", {"info": "Производная из битов — криптографический seed и слепок."}),
             ("demo:draw", {"info": "Генерируем комбинацию без смещения методом выборки."}),
-            ("demo:tests", {"info": "Базовые статистические тесты NIST-подобные запускаются автоматически."}),
+            ("demo:tests", {"info": "Полный набор тестов NIST запускается автоматически."}),
             ("demo:finish", {"info": "Готово. Слепок можно использовать для верификации."}),
         ]
         for ev, data in messages:

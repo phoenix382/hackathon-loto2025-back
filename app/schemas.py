@@ -39,3 +39,31 @@ class AuditResult(BaseModel):
 class DemoConfig(BaseModel):
     scenario: str = Field("default", description="name of demo scenario")
 
+
+# NIST SP 800-22
+class NistStartResponse(BaseModel):
+    job_id: str
+
+
+class NistTestCase(BaseModel):
+    name: str
+    passed: bool
+    p_value: float
+    note: Optional[str] = None
+
+
+class NistSummary(BaseModel):
+    eligible: int
+    total: int
+    passed: int
+    ratio: float
+
+
+class NistReport(BaseModel):
+    job_id: str
+    status: str
+    started_at: float
+    finished_at: Optional[float] = None
+    length: int
+    tests: List[NistTestCase]
+    summary: NistSummary

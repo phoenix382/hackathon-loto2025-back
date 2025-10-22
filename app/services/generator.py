@@ -5,7 +5,7 @@ from typing import Dict, Any, Callable
 
 from .logging import StageLogger
 from .entropy import collect_entropy, von_neumann_extractor, derive_seed_and_commitment
-from .stat_tests import basic_tests
+from .nist_runner import run_nist_full
 
 
 def run_draw(
@@ -34,10 +34,13 @@ def run_draw(
     rng = random.Random(seed_int)
     combo = sorted(rng.sample(range(1, max_number + 1), k=numbers))
     logger.stage("draw:done", {"combo": combo})
-    # 5) Basic randomness tests
-    logger.stage("tests:start", {})
-    tests = basic_tests(white_bits[: max(2048, numbers * 64)])
-    logger.stage("tests:done", {"summary": tests.get("summary", {})})
+    # 5) Full NIST SP 800-22 tests
+    logger.stage("tests:start", {"suite": "NIST SP 800-22"})
+    nist = run_nist_full(white_bits)
+    # Merge NIST stages into draw timeline
+    for evt in nist.get("stages", []):
+        logger.stage(evt.get("stage", "nist"), evt.get("data", {}))
+    logger.stage("tests:done", {"suite": "NIST SP 800-22", "summary": nist.get("summary", {})})
     finished_at = time.time()
     return {
         "status": "completed",
@@ -46,6 +49,6 @@ def run_draw(
         "stages": logger.events,
         "draw": combo,
         "fingerprint": fingerprint,
-        "tests": tests,
+        "tests": {"nist": {"summary": nist.get("summary", {}), "tests": nist.get("tests", [])}},
         "_white_bits": white_bits,
     }
