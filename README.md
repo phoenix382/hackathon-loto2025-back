@@ -119,6 +119,14 @@ curl -N "http://localhost:8000/demo/stream?scenario=default"
 app/
   main.py                 # FastAPI приложение и маршруты
   schemas.py              # Pydantic‑схемы запросов/ответов
+  core/                   # Теги OpenAPI и глобальное состояние
+    tags.py               # Группы/описания тегов для Swagger UI
+    state.py              # Глобальные in-memory хранилища задач
+  routers/                # Разнесённые роутеры
+    draw.py               # Тираж: старт, результат, стрим, биты, NIST для тиража
+    audit.py              # Аудит: быстрые тесты и полный NIST (старт/стрим/результат)
+    demo.py               # Демонстрационный SSE поток
+    health.py             # /health и корень сервиса
   parsers/
     news_parser.py        # RSS‑новости (feedparser)
     weather_parser.py     # Погодные данные (Open‑Meteо)
