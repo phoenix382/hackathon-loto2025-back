@@ -33,7 +33,7 @@ async def start_draw(
             "default": {
                 "summary": "Полный набор источников",
                 "value": {
-                    "sources": ["news", "weather", "os", "time"],
+                    "sources": ["news", "weather", "os", "time", "solar"],
                     "bits": 4096,
                     "numbers": 6,
                     "max_number": 49,
@@ -185,4 +185,3 @@ async def nist_from_draw(job_id: str):
 
     asyncio.create_task(run())
     return NistStartResponse(job_id=n_job_id)
-
