@@ -3,7 +3,9 @@ name: Python Deploy
 on:
   push:
     branches: [ production ]
-
+  pull_request:
+    branches: [ production ]
+  
 env:
  PROJECT_NAME: python-app
 
