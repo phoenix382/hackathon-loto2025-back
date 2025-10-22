@@ -9,6 +9,11 @@ class DrawConfig(BaseModel):
     max_number: int = 49
 
 
+class DrawBitsResponse(BaseModel):
+    job_id: str
+    bits: str
+    length: int
+
 class DrawStartResponse(BaseModel):
     job_id: str
 

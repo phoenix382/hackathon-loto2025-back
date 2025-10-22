@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.state import JOBS, NIST_JOBS, JOBS_LOCK, NIST_JOBS_LOCK
-from app.domain.schemas import DrawConfig, DrawStartResponse, DrawResult, NistStartResponse, WsInfo
+from app.domain.schemas import DrawConfig, DrawStartResponse, DrawResult, NistStartResponse, WsInfo, DrawBitsResponse
 from app.services.generator import run_draw
 from app.services.nist_runner import run_nist_full
 from app.utils.sse import sse_format
@@ -146,6 +146,7 @@ async def draw_stream(job_id: str):
 
 @router.get(
     "/draw/bits/{job_id}",
+    response_model=DrawBitsResponse,
     tags=["Draw"],
     summary="Получение использованного битового потока",
     description="Возвращает белёные биты, использованные для генерации (для внешнего аудита).",
