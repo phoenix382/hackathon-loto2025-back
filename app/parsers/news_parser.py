@@ -2,6 +2,21 @@ import feedparser
 from datetime import datetime
 import time
 
+def get_author_from_entry(entry, default_author):
+    """Извлекает автора из RSS записи"""
+    author_fields = ['author', 'creator', 'dc:creator', 'dc:author']
+
+    for field in author_fields:
+        if hasattr(entry, field) and entry[field]:
+            author = entry[field]
+            # Очищаем автора
+            if ',' in author:
+                author = author.split(',')[0].strip()
+            if '|' in author:
+                author = author.split('|')[0].strip()
+            return author
+
+    return default_author
 
 def get_rss_news(num_news=1):
     """
@@ -84,20 +99,3 @@ def get_rss_news(num_news=1):
         time.sleep(0.5)
 
     return all_news
-
-
-def get_author_from_entry(entry, default_author):
-    """Извлекает автора из RSS записи"""
-    author_fields = ['author', 'creator', 'dc:creator', 'dc:author']
-
-    for field in author_fields:
-        if hasattr(entry, field) and entry[field]:
-            author = entry[field]
-            # Очищаем автора
-            if ',' in author:
-                author = author.split(',')[0].strip()
-            if '|' in author:
-                author = author.split('|')[0].strip()
-            return author
-
-    return default_author
