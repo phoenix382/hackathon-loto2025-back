@@ -67,3 +67,12 @@ class NistReport(BaseModel):
     length: int
     tests: List[NistTestCase]
     summary: NistSummary
+
+
+class WsInfo(BaseModel):
+    url: str
+    event_format: str = Field(
+        description="Формат сообщения WebSocket: JSON с полями event и data"
+    )
+    example_message: Dict[str, Any]
+    note: Optional[str] = None

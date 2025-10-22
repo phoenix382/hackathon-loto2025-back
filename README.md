@@ -3,7 +3,7 @@
 Сервис генерации тиражей лотереи и аудита случайных последовательностей на FastAPI. Поддерживает сбор энтропии из внешних источников (RSS‑новости, погодные данные) и локальных источников (OS RNG, временной джиттер), поэтапную визуализацию процесса (SSE), автоматический запуск полного набора тестов NIST SP 800‑22 и цифровой слепок результата для последующей верификации.
 
 ## Возможности
-- Генерация тиражной комбинации с онлайн‑этапами (SSE): сбор энтропии, вайтинг, сид, результат, полный NIST.
+- Генерация тиражной комбинации с онлайн‑этапами (SSE/WebSocket): сбор энтропии, вайтинг, сид, результат, полный NIST.
 - Аудит внешнего генератора: загрузка последовательности (bits или файл), автоматический анализ и отчёт.
 - Демонстрационный режим с пояснениями шагов.
 - Swagger UI по адресу `/swagger` (OpenAPI JSON доступен по `/openapi.json`).
@@ -27,6 +27,7 @@ Swagger UI: http://localhost:8000/swagger
 ### 1) Проведение тиража (онлайн)
 - POST `/draw/start` — старт генерации; возвращает `job_id`.
 - GET `/draw/stream/{job_id}` — поток серверных событий (SSE) с этапами генерации.
+- WS `/draw/ws/{job_id}` — WebSocket‑стрим тех же событий (последовательная доставка).
 - GET `/draw/result/{job_id}` — итог: комбинация, слепок, сводка автотестов.
 - GET `/draw/bits/{job_id}` — белёные биты, использованные для генерации (для внешнего аудита).
 
@@ -65,6 +66,7 @@ curl -s http://localhost:8000/draw/bits/<job_id> | jq -r .bits > random_secure.t
 Полный набор NIST SP 800-22:
 - POST `/audit/nist/start` — запускает полный набор тестов для переданных бит/чисел, возвращает `job_id`.
 - GET `/audit/nist/stream/{job_id}` — SSE‑прогресс (eligibility, тесты, сводка).
+- WS `/audit/nist/ws/{job_id}` — WebSocket‑прогресс NIST.
 - GET `/audit/nist/result/{job_id}` — результат с p‑values и сводкой.
 
 Примеры:
@@ -98,16 +100,18 @@ curl -N "http://localhost:8000/demo/stream?scenario=default"
 - Draw
   - POST `/draw/start` — старт генерации тиража
   - GET `/draw/stream/{job_id}` — SSE‑этапы генерации
+  - WS `/draw/ws/{job_id}` — WebSocket‑этапы генерации
   - GET `/draw/result/{job_id}` — итог тиража
   - GET `/draw/bits/{job_id}` — белёные биты для аудита
 - Audit
   - POST `/audit/analyze` — анализ последовательности
   - POST `/audit/upload` — анализ файла с битами
 - Demo
-  - GET `/demo/stream` — демонстрационный стрим
+ - GET `/demo/stream` — демонстрационный стрим
  - Audit (NIST)
    - POST `/audit/nist/start` — полный набор NIST
    - GET `/audit/nist/stream/{job_id}` — SSE прогресс NIST
+   - WS `/audit/nist/ws/{job_id}` — WebSocket прогресс NIST
    - GET `/audit/nist/result/{job_id}` — результат NIST
  - Draw → NIST
    - POST `/draw/{job_id}/nist/start` — полный набор NIST на битах конкретного тиража
@@ -196,6 +200,36 @@ PY
 - SSE не воспроизводится в Swagger UI — используйте браузер/`curl -N`/клиент SSE.
 - Сетевые источники могут быть недоступны — сервис всё равно завершит генерацию на `os`/`time`.
 - Базовые статистические тесты — индикативны; для регуляторного аудита используйте NIST SP 800‑22.
+
+## WebSocket стриминг
+Помимо SSE доступны WebSocket‑потоки с тем же набором событий:
+
+- Тираж: `ws://localhost:8000/draw/ws/{job_id}`
+- NIST: `ws://localhost:8000/audit/nist/ws/{job_id}`
+
+Формат сообщения — JSON `{ "event": string, "data": object }`.
+
+Примеры:
+```
+wscat -c ws://localhost:8000/draw/ws/<job_id>
+```
+
+JS:
+```js
+const ws = new WebSocket(`ws://localhost:8000/draw/ws/${jobId}`);
+ws.onmessage = (ev) => {
+  const msg = JSON.parse(ev.data);
+  console.log(msg.event, msg.data);
+};
+```
+
+Финальное сообщение имеет `event: "final"`.
+
+## Асинхронность и многопоточность
+- Блокирующие операции (генерация тиража, полный NIST, тяжёлые анализы) выполняются в пуле потоков (`asyncio.to_thread`), не блокируя event loop.
+- Размер пула задаётся `THREAD_POOL_WORKERS` (по умолчанию ≈ `CPU*4`, минимум 8, максимум 64).
+- Количество процессов Uvicorn — `UVICORN_WORKERS`/`WEB_CONCURRENCY`. Внимание: при `workers>1` состояние задач хранится в памяти каждого процесса — используйте Redis/БД для общего состояния.
+- Дополнительно доступны `HOST` и `PORT` для настройки адреса/порта.
 
 ## Лицензирование и права
 Проект предназначен для демонстрационных/внутренних целей хакатона. Использование внешних источников данных подчиняется их условиям.

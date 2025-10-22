@@ -10,4 +10,9 @@ if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
 
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    workers_env = os.getenv("UVICORN_WORKERS") or os.getenv("WEB_CONCURRENCY")
+    workers = int(workers_env) if workers_env and workers_env.isdigit() else 1
+    # Note: multiple workers spawn multiple processes; in-memory job state will not be shared.
+    uvicorn.run("app.main:app", host=host, port=port, reload=False, workers=workers)

@@ -19,14 +19,17 @@ async def root():
             "/draw/start",
             "/draw/result/{job_id}",
             "/draw/stream/{job_id}",
+            "/draw/ws/{job_id}",
+            "/draw/ws-info/{job_id}",
             "/draw/bits/{job_id}",
             "/audit/analyze",
             "/audit/upload",
             "/audit/nist/start",
             "/audit/nist/stream/{job_id}",
+            "/audit/nist/ws/{job_id}",
+            "/audit/nist/ws-info/{job_id}",
             "/audit/nist/result/{job_id}",
             "/demo/stream",
             "/health",
         ],
     }
-
