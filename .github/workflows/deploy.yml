@@ -35,13 +35,13 @@ jobs:
         # Запускаем контейнеры
         docker compose -p $PROJECT_NAME up -d
     
-#    - name: Fix permissions
-#      run: |
-#        RUNNER_USER=$(whoami)
-#        RUNNER_GROUP=$(id -gn $RUNNER_USER)
-#        sudo -S chown -R $RUNNER_USER:$RUNNER_GROUP `find $GITHUB_WORKSPACE -name "__pycache__"`
-#        sudo -S chmod -R 755 `find $GITHUB_WORKSPACE -name "__pycache__"`
-#        echo "Fixed permissions for __pycache__"
+ #   - name: Fix permissions
+ #     run:
+ #       RUNNER_USER=$(whoami)
+ #       RUNNER_GROUP=$(id -gn $RUNNER_USER)
+ #       sudo chown -R $RUNNER_USER:$RUNNER_GROUP `find $GITHUB_WORKSPACE -name="__pycache__"`
+ #       sudo chmod -R 755 `find $GITHUB_WORKSPACE -name="__pycache__"`
+ #       echo "Fixed permissions for __pycache__"
 
     - name: Verify deployment
       run: |

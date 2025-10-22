@@ -24,6 +24,7 @@ def collect_entropy(sources: List[str], min_bits: int, logger: StageLogger) -> s
     Sources:
       - 'news': uses news_parser.get_rss_news
       - 'weather': uses weather_parser.OpenMeteoWeatherParser
+      - 'meteo_sat': uses meteo_sat_parser.get_meteo_sat_images (GOES/Himawari/VIIRS)
       - 'os': uses os.urandom
       - 'time': samples perf_counter jitter
     """
@@ -67,6 +68,18 @@ def collect_entropy(sources: List[str], min_bits: int, logger: StageLogger) -> s
                 bits.append(_hash_to_bits(name.encode('utf-8'), meta, content))
         except Exception as e:
             logger.stage("entropy:solar:error", {"error": str(e)})
+
+    if 'meteo_sat' in sources:
+        try:
+            logger.stage("entropy:meteo_sat:fetch", {})
+            from app.parsers.meteo_sat_parser import get_meteo_sat_images
+            images = get_meteo_sat_images()
+            for name, content, headers in images:
+                # Combine vantage/sensor id + HTTP metadata + raw bytes
+                meta = (headers.get('last-modified', '') + '|' + headers.get('etag', '')).encode('utf-8')
+                bits.append(_hash_to_bits(name.encode('utf-8'), meta, content))
+        except Exception as e:
+            logger.stage("entropy:meteo_sat:error", {"error": str(e)})
 
     if 'os' in sources:
         logger.stage("entropy:os:start", {})

@@ -33,7 +33,7 @@ async def start_draw(
             "default": {
                 "summary": "Полный набор источников",
                 "value": {
-                    "sources": ["news", "weather", "os", "time", "solar"],
+                    "sources": ["news", "weather", "solar", "meteo_sat", "os", "time"],
                     "bits": 4096,
                     "numbers": 6,
                     "max_number": 49,
