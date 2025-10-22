@@ -3,9 +3,12 @@ name: Python Deploy
 on:
   push:
     branches: [ production ]
-  pull_request:
-    branches: [ production ]
-  
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual deploy'
+        required: false
+        default: 'Manual trigger'
 env:
  PROJECT_NAME: python-app
 
