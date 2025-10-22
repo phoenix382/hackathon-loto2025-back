@@ -17,15 +17,25 @@ def run_draw(
 ) -> Dict[str, Any]:
     logger = StageLogger(emit)
     started_at = time.time()
-    # 1) Collect entropy
-    raw_bits = collect_entropy(sources, bits, logger)
-    # 2) Whitening
-    white_bits = von_neumann_extractor(raw_bits, logger)
-    if len(white_bits) < numbers * 12:  # ensure enough material
-        # Pad deterministically from raw
-        logger.stage("whitening:pad", {"from": len(white_bits)})
-        white_bits += raw_bits[: numbers * 12]
-        logger.stage("whitening:padded", {"to": len(white_bits)})
+    # 1) Collect whitened entropy to an exact target length
+    target_white_bits = bits
+    white_bits_parts: list[str] = []
+    total_white = 0
+    # Start with a reasonable pre-whitening batch; adjust if shortfall
+    batch_raw = max(4096, target_white_bits * 2)
+    while total_white < target_white_bits:
+        raw_bits = collect_entropy(sources, batch_raw, logger)
+        chunk = von_neumann_extractor(raw_bits, logger)
+        white_bits_parts.append(chunk)
+        total_white += len(chunk)
+        if total_white < target_white_bits:
+            logger.stage(
+                "whitening:shortfall",
+                {"have": total_white, "need": target_white_bits, "next_batch": batch_raw * 2},
+            )
+            # Increase batch size to converge faster
+            batch_raw = min(batch_raw * 2, max(65536, target_white_bits * 16))
+    white_bits = ("".join(white_bits_parts))[:target_white_bits]
     # 3) Derive seed and commitment
     seed_bytes, fingerprint = derive_seed_and_commitment(white_bits, logger)
     # 4) Generate draw
