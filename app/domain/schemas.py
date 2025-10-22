@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 
 class DrawConfig(BaseModel):
-    sources: List[str] = Field(default_factory=lambda: ["news", "weather", "os", "time", "solar"])  # available: news, weather, os, time, solar
+    sources: List[str] = Field(default_factory=lambda: ["news", "weather", "os", "time", "solar", "meteo_sat"])  # available: news, weather, os, time, solar, meteo_sat
     bits: int = 4096
     numbers: int = 6
     max_number: int = 49

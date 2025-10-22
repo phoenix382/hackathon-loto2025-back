@@ -23,6 +23,7 @@ def get_solar_images() -> List[Tuple[str, bytes, Dict[str, str]]]:
         ("sdo_aia_0193", "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0193.jpg"),
         ("sdo_aia_0304", "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0304.jpg"),
         # NOAA SWPC GOES SUVI latest images
+        ("sdo_hmi_continuum", "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_HMIIF.jpg"),
         ("noaa_suvi_195", "https://services.swpc.noaa.gov/images/suvi/primary/195/latest.jpg"),
         ("noaa_suvi_304", "https://services.swpc.noaa.gov/images/suvi/primary/304/latest.jpg"),
         ("noaa_suvi_171", "https://services.swpc.noaa.gov/images/suvi/primary/171/latest.jpg"),
