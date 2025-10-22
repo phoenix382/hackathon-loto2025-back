@@ -2,7 +2,7 @@ import hashlib
 import os
 import time
 from typing import List, Tuple
-from app.parsers.news_parser import get_rss_news
+from app.parsers.solar_parser import get_solar_images
 
 
 from .logging import StageLogger
@@ -33,6 +33,8 @@ def collect_entropy(sources: List[str], min_bits: int, logger: StageLogger) -> s
     if 'news' in sources:
         try:
             logger.stage("entropy:news:fetch", {})
+            # Lazy import to avoid hard dependency when not used
+            from app.parsers.news_parser import get_rss_news
             news = get_rss_news(num_news=5)
             for item in news:
                 payload = (
@@ -54,6 +56,17 @@ def collect_entropy(sources: List[str], min_bits: int, logger: StageLogger) -> s
                 bits.append(_hash_to_bits(payload))
         except Exception as e:
             logger.stage("entropy:weather:error", {"error": str(e)})
+
+    if 'solar' in sources:
+        try:
+            logger.stage("entropy:solar:fetch", {})
+            images = get_solar_images()
+            for name, content, headers in images:
+                # Mix bytes with HTTP metadata to diversify payload
+                meta = (headers.get('last-modified', '') + '|' + headers.get('etag', '')).encode('utf-8')
+                bits.append(_hash_to_bits(name.encode('utf-8'), meta, content))
+        except Exception as e:
+            logger.stage("entropy:solar:error", {"error": str(e)})
 
     if 'os' in sources:
         logger.stage("entropy:os:start", {})
@@ -106,4 +119,3 @@ def derive_seed_and_commitment(bits: str, logger: StageLogger) -> Tuple[bytes, s
     commit = hashlib.sha256(digest + b'|commit_v1').hexdigest()
     logger.stage("seed:done", {"seed_bytes": len(digest), "fingerprint": commit})
     return digest, commit
-
