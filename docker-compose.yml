@@ -7,6 +7,8 @@ services:
     volumes:
       - .:/app
     
+    user: "${UID:-1000}:${GID:-1000}"
+
     environment:
       - PATH=/app/.venv/bin:$PATH
     
