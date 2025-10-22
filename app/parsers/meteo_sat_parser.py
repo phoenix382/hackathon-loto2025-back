@@ -1,24 +1,28 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import datetime
-import hashlib
-import imghdr
 from typing import Dict, List, Tuple, Iterable
-
 import requests
-
+import imghdr
+import hashlib
 
 DEFAULT_TIMEOUT = 8
-UA = "loto-rng/1.1 (+entropy images; contact: none)"
-
+def _is_image_bytes(b: bytes) -> str:
+    """
+    Возвращает формат ('jpeg', 'png', 'gif', 'webp', ...) если распознан,
+    иначе пустую строку.
+    """
+    kind = imghdr.what(None, h=b)
+    return kind or ""
 
 def _fetch(url: str) -> Tuple[bytes, Dict[str, str]]:
-    resp = requests.get(url, timeout=DEFAULT_TIMEOUT, headers={"User-Agent": UA})
+    resp = requests.get(url, timeout=DEFAULT_TIMEOUT, headers={"User-Agent": "loto-rng/1.0"})
     resp.raise_for_status()
     headers = {k.lower(): v for k, v in resp.headers.items()}
     return resp.content, headers
 
+def _is_jpeg(content: bytes, headers: Dict[str, str]) -> bool:
+    ct = headers.get("content-type", "").lower()
+    sig = content[:3]
+    return (ct.startswith("image/jpeg") or ct.startswith("image/jpg")) and sig == b"\xff\xd8\xff"
 
 def _worldview_snapshot_url(layer: str,
                             date: datetime.date,
@@ -44,15 +48,112 @@ def _worldview_snapshot_url(layer: str,
     )
     return f"{base}?" + "&".join(params)
 
+def _goes_geocolor(sat: str, sector: str) -> str:
+    # sat: "GOES19" (East), "GOES18" (West); sector: "FD" (full disk), "CONUS"
+    return f"https://cdn.star.nesdis.noaa.gov/{sat}/ABI/{sector}/GEOCOLOR/latest.jpg"
 
-def _is_image_bytes(b: bytes) -> str:
-    """
-    Возвращает формат ('jpeg', 'png', 'gif', 'webp', ...) если распознан,
-    иначе пустую строку.
-    """
-    kind = imghdr.what(None, h=b)
-    return kind or ""
+def _goes_band(sat: str, band: int, size: str = "678x678.jpg", sector: str = "FD") -> str:
+    # stable “latest” symlinks exist per size inside each band directory
+    return f"https://cdn.star.nesdis.noaa.gov/{sat}/ABI/{sector}/{band:02d}/{size}"
 
+def get_meteo_sat_images(validate: bool = True,min_bytes: int = 10_000,
+                         dedup: bool = True) -> List[Tuple[str, bytes, Dict[str, str]]]:
+    """Получить небольшую, но разнообразную подборку актуальных спутниковых снимков.
+
+    Источники:
+      - GOES-19 (East) и GOES-18 (West): GeoColor (FD) + CONUS (для GOES-18)
+      - GOES-19/18: каналы 02 (Red VIS), 08 (WV 6.2µm), 13 (Clean IR) — Full Disk, 678x678
+      - NASA Worldview VIIRS NOAA-20 Global TrueColor (текущая дата)
+
+    Возвращает: список кортежей (source_name, image_bytes, response_headers)
+    """
+    today = datetime.date.today()
+
+    urls: List[Tuple[str, str]] = [
+        # GeoColor full disk
+        ("goes19_geocolor_fd", _goes_geocolor("GOES19", "FD")),
+        ("goes18_geocolor_fd", _goes_geocolor("GOES18", "FD")),
+        # Геоcolor регион США (на CDN путь CONUS, это и есть PACUS для GOES-18)
+        ("goes18_conus_geocolor", _goes_geocolor("GOES18", "CONUS")),
+        # Отдельные каналы (Full Disk) — стабильные «latest» файлы по размеру
+        ("goes19_band02_fd", _goes_band("GOES19", 2)),
+        ("goes18_band02_fd", _goes_band("GOES18", 2)),
+        ("goes19_band08_fd", _goes_band("GOES19", 8)),
+        ("goes18_band08_fd", _goes_band("GOES18", 8)),
+        ("goes19_band13_fd", _goes_band("GOES19", 13)),
+        ("goes18_band13_fd", _goes_band("GOES18", 13)),
+        ("goes16_geocolor_fd", "https://cdn.star.nesdis.noaa.gov/GOES16/ABI/FD/GEOCOLOR/latest.jpg"),
+        # NASA Worldview — глобальный TrueColor (без ключа)
+         ("nasa_viirs_noaa20_truecolor",
+         _worldview_snapshot_url("VIIRS_NOAA20_CorrectedReflectance_TrueColor", today)),
+        ("nasa_viirs_snpp_truecolor",
+         _worldview_snapshot_url("VIIRS_SNPP_CorrectedReflectance_TrueColor", today)),
+        ("nasa_modis_terra_truecolor",
+         _worldview_snapshot_url("MODIS_Terra_CorrectedReflectance_TrueColor", today)),
+        ("nasa_modis_aqua_truecolor",
+         _worldview_snapshot_url("MODIS_Aqua_CorrectedReflectance_TrueColor", today)),
+    ]
+
+    out: List[Tuple[str, bytes, Dict[str, str]]] = []
+    seen_hashes: set[str] = set()
+
+    for name, url in urls:
+        try:
+            content, headers = _fetch(url)
+
+            if validate:
+                ok, meta = _validate_image(name, content, headers, min_bytes=min_bytes)
+                # прикрепим метаданные в headers с префиксом (не ломаем сигнатуру возврата)
+                headers = dict(headers)
+                for k, v in meta.items():
+                    headers[f"x-validate-{k}"] = v
+                if not ok:
+                    continue  # отбрасываем неподходящее
+
+                if dedup:
+                    digest = meta["sha256"]
+                    if digest in seen_hashes:
+                        # дубликат — пропускаем
+                        continue
+                    seen_hashes.add(digest)
+
+            out.append((name, content, headers))
+
+        except Exception:
+            # Best-effort: любые падения источников просто пропускаем
+            continue
+
+    return out
+
+# Дополнительно: быстрая самопроверка — вернёт (name, ok_bool, http_content_type)
+def selftest_sources() -> List[Tuple[str, bool, str]]:
+    results = []
+    for name, url in [
+        ("goes19_geocolor_fd", _goes_geocolor("GOES19", "FD")),
+        ("goes18_geocolor_fd", _goes_geocolor("GOES18", "FD")),
+        ("goes18_conus_geocolor", _goes_geocolor("GOES18", "CONUS")),
+        ("goes19_band02_fd", _goes_band("GOES19", 2)),
+        ("goes18_band02_fd", _goes_band("GOES18", 2)),
+        ("goes19_band08_fd", _goes_band("GOES19", 8)),
+        ("goes18_band08_fd", _goes_band("GOES18", 8)),
+        ("goes19_band13_fd", _goes_band("GOES19", 13)),
+        ("goes18_band13_fd", _goes_band("GOES18", 13)),
+         ("nasa_viirs_noaa20_truecolor",
+         _worldview_snapshot_url("VIIRS_NOAA20_CorrectedReflectance_TrueColor", datetime.date.today)),
+        ("nasa_viirs_snpp_truecolor",
+         _worldview_snapshot_url("VIIRS_SNPP_CorrectedReflectance_TrueColor", datetime.date.today)),
+        ("nasa_modis_terra_truecolor",
+         _worldview_snapshot_url("MODIS_Terra_CorrectedReflectance_TrueColor", datetime.date.today)),
+        ("nasa_modis_aqua_truecolor",
+         _worldview_snapshot_url("MODIS_Aqua_CorrectedReflectance_TrueColor", datetime.date.today)),
+    ]:
+        try:
+            content, headers = _fetch(url)
+            ok = _is_jpeg(content, headers)
+            results.append((name, ok, headers.get("content-type", "")))
+        except Exception:
+            results.append((name, False, ""))
+    return results
 
 def _validate_image(name: str,
                     content: bytes,
@@ -94,88 +195,6 @@ def _validate_image(name: str,
     meta["ok"] = "true" if ok else "false"
     return ok, meta
 
-
-def _sources(today: datetime.date) -> List[Tuple[str, str]]:
-    """
-    Подборка источников, дающих варьирующийся во времени контент (проверяемые факты):
-      - GOES-16/18 (GEOCOLOR + разные каналы)
-      - Himawari-8/9 (NICT true color)
-      - SDO (Солнце, несколько длин волн)
-      - NASA Worldview (VIIRS/MODIS, разные платформы)
-    Все — без ключей и с устойчивых публичных хостов.
-    """
-    urls: List[Tuple[str, str]] = [
-        # NOAA/NESDIS STAR CDN — GOES Full Disk (устойчивый публичный CDN)
-        ("goes16_geocolor_fd", "https://cdn.star.nesdis.noaa.gov/GOES16/ABI/FD/GEOCOLOR/latest.jpg"),
-        ("goes18_geocolor_fd", "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/GEOCOLOR/latest.jpg"),
-        ("goes16_band02_fd",   "https://cdn.star.nesdis.noaa.gov/GOES16/ABI/FD/Channel/02/latest.jpg"),  # Red Vis
-        ("goes18_band02_fd",   "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/Channel/02/latest.jpg"),
-        ("goes16_band08_fd",   "https://cdn.star.nesdis.noaa.gov/GOES16/ABI/FD/Channel/08/latest.jpg"),  # WV 6.2µm
-        ("goes18_band08_fd",   "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/Channel/08/latest.jpg"),
-        # Региональные композиции (обычно есть; если нет — просто пропустим)
-        ("goes16_conus_geocolor", "https://cdn.star.nesdis.noaa.gov/GOES16/ABI/CONUS/GEOCOLOR/latest.jpg"),
-        ("goes18_pacus_geocolor", "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/PACUS/GEOCOLOR/latest.jpg"),
-
-        # Himawari-8/9 true color (NICT публичное зеркало)
-        ("himawari_geocolor_fd", "https://himawari8.nict.go.jp/img/D531106/2d/550/latest.jpg"),
-
-        # NASA Worldview (GIBS) — разные платформы/датчики, TrueColor, текущая дата
-        ("nasa_viirs_noaa20_truecolor",
-         _worldview_snapshot_url("VIIRS_NOAA20_CorrectedReflectance_TrueColor", today)),
-        ("nasa_viirs_snpp_truecolor",
-         _worldview_snapshot_url("VIIRS_SNPP_CorrectedReflectance_TrueColor", today)),
-        ("nasa_modis_terra_truecolor",
-         _worldview_snapshot_url("MODIS_Terra_CorrectedReflectance_TrueColor", today)),
-        ("nasa_modis_aqua_truecolor",
-         _worldview_snapshot_url("MODIS_Aqua_CorrectedReflectance_TrueColor", today)),
-    ]
-    return urls
-
-
-def get_meteo_sat_images(validate: bool = True,
-                         min_bytes: int = 10_000,
-                         dedup: bool = True) -> List[Tuple[str, bytes, Dict[str, str]]]:
-    """
-    Скачивает набор разнородных космических/метео-изображений, пригодных для энтропии.
-    По умолчанию проводит валидацию и дедупликацию. Возвращает
-    [(source_name, image_bytes, response_headers), ...]
-    """
-    today = datetime.date.today()
-    urls = _sources(today)
-
-    out: List[Tuple[str, bytes, Dict[str, str]]] = []
-    seen_hashes: set[str] = set()
-
-    for name, url in urls:
-        try:
-            content, headers = _fetch(url)
-
-            if validate:
-                ok, meta = _validate_image(name, content, headers, min_bytes=min_bytes)
-                # прикрепим метаданные в headers с префиксом (не ломаем сигнатуру возврата)
-                headers = dict(headers)
-                for k, v in meta.items():
-                    headers[f"x-validate-{k}"] = v
-                if not ok:
-                    continue  # отбрасываем неподходящее
-
-                if dedup:
-                    digest = meta["sha256"]
-                    if digest in seen_hashes:
-                        # дубликат — пропускаем
-                        continue
-                    seen_hashes.add(digest)
-
-            out.append((name, content, headers))
-
-        except Exception:
-            # Best-effort: любые падения источников просто пропускаем
-            continue
-
-    return out
-
-
-# Если хотите быстрый отчёт по валидации без изменения внешней логики:
 def validate_report(items: List[Tuple[str, bytes, Dict[str, str]]]) -> List[Dict[str, str]]:
     """
     Извлекает x-validate-* поля из headers для краткого аудита.
