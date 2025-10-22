@@ -1,0 +1,37 @@
+name: Python Deploy
+
+on:
+  push:
+    branches: [ production ]
+
+env:
+ PROJECT_NAME: python-app
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Pull latest changes
+      run: |
+        git pull origin production
+
+    - name: Build and deploy
+      run: |
+        # Останавливаем текущие контейнеры
+        docker-compose -p $PROJECT_NAME down --remove-orphans || true
+        
+        # Собираем новые образы
+        docker-compose -p $PROJECT_NAME build --no-cache
+        
+        # Запускаем контейнеры
+        docker-compose -p $PROJECT_NAME up -d
+
+    - name: Verify deployment
+      run: |
+        sleep 20
+        docker-compose -p $PROJECT_NAME ps
+        docker-compose -p $PROJECT_NAME logs --tail=30
