@@ -30,13 +30,13 @@ jobs:
         docker compose -p $PROJECT_NAME down --remove-orphans || true
         
         # Собираем новые образы
-        docker compose -p $PROJECT_NAME build --no-cache
+        docker compose -p $PROJECT_NAME build
         
         # Запускаем контейнеры
         docker compose -p $PROJECT_NAME up -d
     
     - name: Fix permissions
-      run:
+      run: |
         RUNNER_USER=$(whoami)
         RUNNER_GROUP=$(id -gn $RUNNER_USER)
         sudo chown -R $RUNNER_USER:$RUNNER_GROUP `find $GITHUB_WORKSPACE -name "__pycache__"`
