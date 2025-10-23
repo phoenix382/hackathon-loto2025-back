@@ -22,6 +22,18 @@ python run.py
 
 Swagger UI: http://localhost:8000/swagger
 
+### Запуск в Docker
+```
+# через docker compose (рекомендуется)
+docker compose up --build
+
+# или вручную
+docker build -t loto-rng .
+docker run --rm -p 8000:8000 \
+  -e UVICORN_WORKERS=1 -e THREAD_POOL_WORKERS=16 \
+  loto-rng
+```
+
 ## Сценарии использования
 
 ### 1) Проведение тиража (онлайн)
@@ -92,6 +104,7 @@ curl -s -X POST http://localhost:8000/audit/upload \
 ```
 curl -N "http://localhost:8000/demo/stream?scenario=default"
 ```
+Также доступен WebSocket‑вариант: `ws://localhost:8000/demo/ws`.
 
 ## Эндпоинты (сводка)
 - Health
@@ -101,6 +114,7 @@ curl -N "http://localhost:8000/demo/stream?scenario=default"
   - POST `/draw/start` — старт генерации тиража
   - GET `/draw/stream/{job_id}` — SSE‑этапы генерации
   - WS `/draw/ws/{job_id}` — WebSocket‑этапы генерации
+  - GET `/draw/ws-info/{job_id}` — описание формата WS‑сообщений
   - GET `/draw/result/{job_id}` — итог тиража
   - GET `/draw/bits/{job_id}` — белёные биты для аудита
 - Audit
@@ -108,10 +122,12 @@ curl -N "http://localhost:8000/demo/stream?scenario=default"
   - POST `/audit/upload` — анализ файла с битами
 - Demo
  - GET `/demo/stream` — демонстрационный стрим
+  - WS `/demo/ws` — демонстрационный WS‑стрим
  - Audit (NIST)
    - POST `/audit/nist/start` — полный набор NIST
    - GET `/audit/nist/stream/{job_id}` — SSE прогресс NIST
    - WS `/audit/nist/ws/{job_id}` — WebSocket прогресс NIST
+   - GET `/audit/nist/ws-info/{job_id}` — описание формата WS‑сообщений
    - GET `/audit/nist/result/{job_id}` — результат NIST
  - Draw → NIST
    - POST `/draw/{job_id}/nist/start` — полный набор NIST на битах конкретного тиража
@@ -121,28 +137,37 @@ curl -N "http://localhost:8000/demo/stream?scenario=default"
 ## Архитектура
 ```
 app/
-  main.py                 # FastAPI приложение и маршруты
-  schemas.py              # Pydantic‑схемы запросов/ответов
+  main.py                 # FastAPI приложение и подключение роутеров
+  domain/
+    schemas.py            # Pydantic‑схемы запросов/ответов
   core/                   # Теги OpenAPI и глобальное состояние
     tags.py               # Группы/описания тегов для Swagger UI
     state.py              # Глобальные in-memory хранилища задач
+    concurrency.py        # Настройка ThreadPoolExecutor
   routers/                # Разнесённые роутеры
     draw.py               # Тираж: старт, результат, стрим, биты, NIST для тиража
     audit.py              # Аудит: быстрые тесты и полный NIST (старт/стрим/результат)
-    demo.py               # Демонстрационный SSE поток
+    demo.py               # Демонстрационный SSE/WS поток
     health.py             # /health и корень сервиса
   parsers/
     news_parser.py        # RSS‑новости (feedparser)
+    solar_parser.py       # Снимки Солнца (NASA SDO, NOAA SUVI)
+    meteo_sat_parser.py   # Снимки метеоспутников (GOES, VIIRS, MODIS)
     weather_parser.py     # Погодные данные (Open‑Meteо)
   services/
     entropy.py            # Сбор энтропии, вайтинг, слепок
     generator.py          # Сценарий генерации тиража
+    nist_runner.py        # Обёртка полного набора NIST
     stat_tests.py         # Базовые статистические тесты (монобит, ран, блочный)
     logging.py            # Логгер этапов (для SSE)
   utils/
     sse.py                # Утилиты для Server‑Sent Events
-run.py                    # Точка входа (Uvicorn)
+lib/
+  NistRng/                # Вендорная библиотека NIST SP 800‑22 (nistrng)
+run.py                    # Точка входа (Uvicorn, настройка sys.path для lib/NistRng)
 requirements.txt          # Зависимости
+Dockerfile                # Образ сервиса
+docker-compose.yml        # Локальный запуск в Docker
 ```
 
 ## Источники энтропии
@@ -206,8 +231,10 @@ PY
 
 - Тираж: `ws://localhost:8000/draw/ws/{job_id}`
 - NIST: `ws://localhost:8000/audit/nist/ws/{job_id}`
+- Демо: `ws://localhost:8000/demo/ws`
 
 Формат сообщения — JSON `{ "event": string, "data": object }`.
+Есть REST‑подсказки с примерами: `GET /draw/ws-info/{job_id}` и `GET /audit/nist/ws-info/{job_id}`.
 
 Примеры:
 ```
@@ -230,6 +257,13 @@ ws.onmessage = (ev) => {
 - Размер пула задаётся `THREAD_POOL_WORKERS` (по умолчанию ≈ `CPU*4`, минимум 8, максимум 64).
 - Количество процессов Uvicorn — `UVICORN_WORKERS`/`WEB_CONCURRENCY`. Внимание: при `workers>1` состояние задач хранится в памяти каждого процесса — используйте Redis/БД для общего состояния.
 - Дополнительно доступны `HOST` и `PORT` для настройки адреса/порта.
+
+## Переменные окружения
+- `HOST`, `PORT` — адрес и порт сервиса (по умолчанию `0.0.0.0:8000`).
+- `UVICORN_WORKERS`/`WEB_CONCURRENCY` — число процессов Uvicorn (по умолчанию 1).
+- `THREAD_POOL_WORKERS` — размер пула потоков для блокирующих задач (по умолчанию `CPU*4`, минимум 8, максимум 64).
+- `PROXY_HEADERS`, `FORWARDED_ALLOW_IPS` — поддержка прокси‑заголовков.
+- `WS_PING_INTERVAL`, `WS_PING_TIMEOUT`, `WS_MAX_SIZE` — тайминги/лимиты WebSocket.
 
 ## Лицензирование и права
 Проект предназначен для демонстрационных/внутренних целей хакатона. Использование внешних источников данных подчиняется их условиям.
