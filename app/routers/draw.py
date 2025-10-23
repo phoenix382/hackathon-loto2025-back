@@ -61,7 +61,7 @@ async def start_draw(
             result = await asyncio.to_thread(
                 run_draw,
                 sources=cfg.sources,
-                bits=cfg.bits,
+                bits=min(5000000, cfg.bits),
                 numbers=cfg.numbers,
                 max_number=cfg.max_number,
                 emit=emit,
