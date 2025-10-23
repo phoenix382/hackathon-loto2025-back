@@ -175,11 +175,15 @@ async def nist_stream(job_id: str):
 async def nist_ws(job_id: str, websocket: WebSocket):
     await websocket.accept()
     try:
+        # immediate ACK so frontend gets a first message
+        await websocket.send_json({"event": "ready", "data": {"job_id": job_id}})
+
+        # wait for job registration if not created yet
         job = NIST_JOBS.get(job_id)
-        if not job:
-            await websocket.send_json({"event": "error", "data": {"error": "job not found"}})
-            await websocket.close(code=1008)
-            return
+        while job is None:
+            await asyncio.sleep(0.2)
+            job = NIST_JOBS.get(job_id)
+
         idx = 0
         # send already accumulated
         stages = job.get("stages", [])
