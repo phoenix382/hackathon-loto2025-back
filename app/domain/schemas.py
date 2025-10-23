@@ -9,6 +9,11 @@ class DrawConfig(BaseModel):
     max_number: int = 49
 
 
+class DrawBitsResponse(BaseModel):
+    job_id: str
+    bits: str
+    length: int
+
 class DrawStartResponse(BaseModel):
     job_id: str
 
@@ -67,3 +72,12 @@ class NistReport(BaseModel):
     length: int
     tests: List[NistTestCase]
     summary: NistSummary
+
+
+class WsInfo(BaseModel):
+    url: str
+    event_format: str = Field(
+        description="Формат сообщения WebSocket: JSON с полями event и data"
+    )
+    example_message: Dict[str, Any]
+    note: Optional[str] = None

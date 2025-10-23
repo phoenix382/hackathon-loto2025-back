@@ -6,11 +6,12 @@ from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.state import NIST_JOBS
-from app.domain.schemas import AuditInput, AuditResult, NistStartResponse, NistReport
+from app.core.state import NIST_JOBS, NIST_JOBS_LOCK
+from app.domain.schemas import AuditInput, AuditResult, NistStartResponse, NistReport, WsInfo
 from app.services.stat_tests import basic_tests
 from app.services.nist_runner import run_nist_full
 from app.utils.sse import sse_format
+from fastapi import WebSocket, WebSocketDisconnect
 
 
 router = APIRouter()
@@ -44,7 +45,7 @@ async def audit_analyze(
         bits = ''.join(f"{n:0{width}b}" for n in payload.numbers)
     else:
         raise HTTPException(400, "Provide sequence_bits or numbers")
-    results = basic_tests(bits)
+    results = await asyncio.to_thread(basic_tests, bits)
     return AuditResult(status="ok", length=len(bits), tests=results)
 
 
@@ -60,7 +61,7 @@ async def audit_upload(file: UploadFile = File(...)):
     bits = ''.join(ch for ch in content if ch in '01')
     if not bits:
         raise HTTPException(400, "Uploaded file does not contain 0/1 bits")
-    results = basic_tests(bits)
+    results = await asyncio.to_thread(basic_tests, bits)
     return AuditResult(status="ok", length=len(bits), tests=results)
 
 
@@ -88,17 +89,21 @@ async def nist_start(payload: AuditInput = Body(...)):
         raise HTTPException(400, "Provide sequence_bits or numbers")
 
     job_id = str(uuid.uuid4())
-    NIST_JOBS[job_id] = {"status": "running", "started_at": time.time(), "stages": []}
+    with NIST_JOBS_LOCK:
+        NIST_JOBS[job_id] = {"status": "running", "started_at": time.time(), "stages": []}
 
     async def run():
         def emit(name: str, evt: dict):
-            NIST_JOBS[job_id]["stages"].append(evt)
+            with NIST_JOBS_LOCK:
+                NIST_JOBS[job_id]["stages"].append(evt)
 
         try:
-            result = run_nist_full(bits, emit=emit)
-            NIST_JOBS[job_id].update(result)
+            result = await asyncio.to_thread(run_nist_full, bits, emit)
+            with NIST_JOBS_LOCK:
+                NIST_JOBS[job_id].update(result)
         except Exception as e:
-            NIST_JOBS[job_id].update({"status": "error", "error": str(e), "finished_at": time.time()})
+            with NIST_JOBS_LOCK:
+                NIST_JOBS[job_id].update({"status": "error", "error": str(e), "finished_at": time.time()})
 
     asyncio.create_task(run())
     return NistStartResponse(job_id=job_id)
@@ -131,6 +136,16 @@ async def nist_result(job_id: str):
     tags=["Audit"],
     summary="SSE прогресс NIST тестов",
     description="Стрим серверных событий с этапами выполнения полного набора NIST.",
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {
+                    "example": "event: nist:start\ndata: {\"length\":4096}\n\n"
+                }
+            },
+            "description": "Поток серверных событий NIST",
+        }
+    },
 )
 async def nist_stream(job_id: str):
     job = NIST_JOBS.get(job_id)
@@ -155,3 +170,65 @@ async def nist_stream(job_id: str):
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
+
+@router.websocket("/audit/nist/ws/{job_id}")
+async def nist_ws(job_id: str, websocket: WebSocket):
+    await websocket.accept()
+    try:
+        # immediate ACK so frontend gets a first message
+        await websocket.send_json({"event": "ready", "data": {"job_id": job_id}})
+
+        # wait for job registration if not created yet
+        job = NIST_JOBS.get(job_id)
+        while job is None:
+            await asyncio.sleep(0.2)
+            job = NIST_JOBS.get(job_id)
+
+        idx = 0
+        # send already accumulated
+        stages = job.get("stages", [])
+        while idx < len(stages):
+            evt = stages[idx]
+            idx += 1
+            await websocket.send_json({"event": evt.get("stage", "nist"), "data": evt})
+        # stream new
+        while True:
+            job = NIST_JOBS.get(job_id)
+            if not job:
+                break
+            stages = job.get("stages", [])
+            while idx < len(stages):
+                evt = stages[idx]
+                idx += 1
+                await websocket.send_json({"event": evt.get("stage", "nist"), "data": evt})
+            if job.get("status") in ("completed", "error"):
+                await websocket.send_json({"event": "final", "data": {"status": job.get("status"), "summary": job.get("summary", {})}})
+                break
+            await asyncio.sleep(0.3)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with NIST_JOBS_LOCK:
+            pass
+
+
+@router.get(
+    "/audit/nist/ws-info/{job_id}",
+    response_model=WsInfo,
+    tags=["Audit"],
+    summary="WebSocket поток прогресса NIST (документация)",
+    description=(
+        "Описание WebSocket стрима для прогресса полного набора NIST. "
+        "Подключайтесь к ws://<host>/audit/nist/ws/{job_id}. Сообщения в формате JSON: {event, data}."
+    ),
+)
+async def nist_ws_info(job_id: str):
+    return WsInfo(
+        url=f"/audit/nist/ws/{job_id}",
+        event_format="{event: string, data: object}",
+        example_message={
+            "event": "nist:test",
+            "data": {"time": 1.23, "stage": "nist:test", "data": {"name": "monobit_frequency", "passed": True, "p_value": 0.42}},
+        },
+        note="Финальное сообщение имеет event=final."
+    )

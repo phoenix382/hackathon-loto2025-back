@@ -3,7 +3,6 @@ uvicorn[standard]
 pydantic
 numpy
 scipy
-nistrng
 feedparser
 requests
 python-multipart

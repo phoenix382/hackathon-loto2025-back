@@ -6,6 +6,7 @@ from app.routers.draw import router as draw_router
 from app.routers.audit import router as audit_router
 from app.routers.demo import router as demo_router
 from app.routers.health import router as health_router
+from app.core.concurrency import init_default_executor, shutdown_default_executor
 
 
 app = FastAPI(
@@ -29,10 +30,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def _startup():
+    # Configure a larger default thread pool for blocking tasks
+    init_default_executor()
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    shutdown_default_executor()
+
 
 # Routers
 app.include_router(draw_router)
 app.include_router(audit_router)
 app.include_router(demo_router)
 app.include_router(health_router)
-
