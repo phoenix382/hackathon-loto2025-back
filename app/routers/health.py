@@ -30,6 +30,7 @@ async def root():
             "/audit/nist/ws-info/{job_id}",
             "/audit/nist/result/{job_id}",
             "/demo/stream",
+            "/demo/ws",
             "/health",
         ],
     }
